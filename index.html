@@ -55,25 +55,47 @@ const PAL = {
   blob: "#a05ce0", blobDark: "#7a3cb8", blobHi: "#c88cf8", blobLight: "#b878f0",
   mouth: "#401838", tongue: "#e85a80",
   white: "#fff8f0", black: "#181020",
+  panel: "#241640", panelHi: "#5a4590",
   danger: "#ff4466", green: "#58c868",
-  text: "#ffe9c8", gold: "#ffd24a",
+  text: "#ffe9c8", dim: "#9a8aca", gold: "#ffd24a",
 };
 const RAINBOW = ["#ff6088", "#ffb048", "#ffe858", "#68e078", "#58b8ff", "#b878f0"];
 
 // ---------- treats ----------
 const TREATS = {
-  candy: { val: 1, r: 5,  feed: 9,  pts: 10 },
-  choc:  { val: 2, r: 7,  feed: 15, pts: 20 },
-  cake:  { val: 3, r: 7,  feed: 22, pts: 30 },
-  donut: { val: 5, r: 8,  feed: 36, pts: 60 },
-  chili: { val: -4, r: 6, feed: 0,  pts: 0  },
+  candy: { val: 1, r: 5,  feed: 9,  pts: 10  },
+  choc:  { val: 2, r: 7,  feed: 15, pts: 20  },
+  cake:  { val: 3, r: 7,  feed: 22, pts: 30  },
+  donut: { val: 5, r: 8,  feed: 36, pts: 60  },
+  gold:  { val: 4, r: 7,  feed: 100, pts: 150 },
+  chili: { val: -4, r: 6, feed: 0,  pts: 0   },
 };
 const CANDY_COLORS = [["#ff6088", "#ffc0d0"], ["#58b8ff", "#c0e4ff"], ["#68e078", "#c8f8d0"], ["#ffb048", "#ffe0b0"]];
+
+// ---------- ranks ----------
+const RANKS = [["CRUMB", 9], ["SNACKER", 12], ["MUNCHER", 18], ["CHONKER", 26], ["GLUTTON", 34], ["CAKE LORD", 42]];
+function rankIdx(r) {
+  let i = 0;
+  for (let k = 0; k < RANKS.length; k++) if (r >= RANKS[k][1]) i = k;
+  return i;
+}
+function titleFor(r) { return RANKS[rankIdx(r)][0]; }
+
+// ---------- quests ----------
+const QUEST_DEFS = [
+  { kind: "eat", target: "choc",  n: 3, label: "EAT 3 CHOCS"    },
+  { kind: "eat", target: "cake",  n: 3, label: "EAT 3 CAKES"    },
+  { kind: "eat", target: "candy", n: 5, label: "EAT 5 CANDIES"  },
+  { kind: "eat", target: "donut", n: 2, label: "CATCH 2 DONUTS" },
+  { kind: "combo", n: 3, label: "DO A COMBO x3" },
+  { kind: "flop",  n: 2, label: "BELLY FLOP x2" },
+];
 
 // ---------- world ----------
 const GROUND = 284;
 const WALL_L = 6, WALL_R = W - 6;
 const GRAV = 0.22;
+const MIN_R = 9, MAX_R = 42;
 
 // ---------- state ----------
 let state = "TITLE";              // TITLE, PLAY, GAMEOVER
@@ -84,39 +106,32 @@ let bestSize = 0;
 const blob = {
   x: W / 2, y: GROUND,            // y = BOTTOM of blob
   vx: 0, vy: 0,
-  r: 9, dr: 9,                    // target radius / displayed radius
-  sx: 1, sy: 1, sxv: 0, syv: 0,   // squash spring
+  r: 9, dr: 9,
+  sx: 1, sy: 1, sxv: 0, syv: 0,
   onGround: true,
-  mouth: 0,                       // 0 closed .. 1 wide open
-  chew: 0, gulp: -1,              // chew timer; gulp = bulge position 0..1 (-1 off)
-  face: "idle", faceT: 0,         // idle | happy | sour
+  mouth: 0, chew: 0, gulp: -1,
+  face: "idle", faceT: 0,
   blink: 0, look: 0,
   charging: false, power: 0,
   airEats: 0,
   deflate: 0,
 };
-const MIN_R = 9, MAX_R = 42;
 
-let treats = [];                  // {x,y,type,r,bob,air, state:'idle'|'eaten', eatT, sx,sy (start pos for tween)}
+let treats = [];
+let marshmallows = [];            // {x,y,w,bob,sy,syv,drift}
 let particles = [];
 let popups = [];
 let hunger = 100;
 let streak = 0, rush = 0;
-let eatQueue = 0;                 // treats currently being devoured
+let eatQueue = 0;
 let sizeTitle = "";
 let gameOverT = 0;
+let rain = 0, rainTimer = 0;      // cake rain event
+let quest = null, questCooldown = 90;
+let stats = { eaten: 0, bestCombo: 0, flops: 0, quests: 0 };
 
 function rand(n) { return Math.floor(Math.random() * n); }
 function lerp(a, b, k) { return a + (b - a) * k; }
-
-function titleFor(r) {
-  if (r >= MAX_R) return "CAKE LORD";
-  if (r >= 34) return "GLUTTON";
-  if (r >= 26) return "CHONKER";
-  if (r >= 18) return "MUNCHER";
-  if (r >= 12) return "SNACKER";
-  return "CRUMB";
-}
 
 // ---------- audio ----------
 let AC = null;
@@ -139,13 +154,16 @@ function tone(freq, dur, type, vol, slide, delay) {
 const sfx = {
   hop:    (p) => tone(150 + p * 100, 0.15, "square", 0.06, 500 + p * 200),
   bounce: () => tone(200, 0.08, "triangle", 0.06, 120),
+  boing:  () => tone(140, 0.28, "square", 0.09, 720),
   chomp:  () => { tone(300, 0.06, "square", 0.09, 150); tone(220, 0.07, "square", 0.08, 110, 0.07); },
   gulp:   () => tone(280, 0.22, "triangle", 0.1, 90),
   grow:   () => { [330, 415, 523].forEach((f, i) => tone(f, 0.1, "square", 0.06, 0, i * 0.06)); },
   sour:   () => { tone(180, 0.3, "sawtooth", 0.09, 70); tone(160, 0.3, "sawtooth", 0.07, 60, 0.05); },
   rush:   () => { [523, 659, 784, 1047, 784, 1047].forEach((f, i) => tone(f, 0.1, "square", 0.07, 0, i * 0.08)); },
   flop:   () => tone(90, 0.25, "sawtooth", 0.12, 40),
-  title:  () => { [392, 523, 659, 784].forEach((f, i) => tone(f, 0.12, "square", 0.07, 0, i * 0.09)); },
+  gold:   () => { [784, 988, 1175, 1568].forEach((f, i) => tone(f, 0.14, "triangle", 0.09, 0, i * 0.07)); },
+  quest:  () => { [659, 784, 1047].forEach((f, i) => tone(f, 0.12, "square", 0.07, 0, i * 0.09)); },
+  rain:   () => { [523, 587, 659, 784, 880, 1047].forEach((f, i) => tone(f, 0.1, "square", 0.06, 0, i * 0.07)); },
   over:   () => { [330, 262, 196, 131].forEach((f, i) => tone(f, 0.35, "triangle", 0.09, 0, i * 0.22)); },
 };
 
@@ -195,10 +213,17 @@ function newGame() {
   blob.r = MIN_R; blob.dr = MIN_R;
   blob.sx = 1; blob.sy = 1; blob.sxv = 0; blob.syv = 0;
   blob.onGround = true; blob.mouth = 0; blob.chew = 0; blob.gulp = -1;
-  blob.face = "idle"; blob.charging = false; blob.power = 0;
+  blob.face = "idle"; blob.faceT = 0; blob.charging = false; blob.power = 0;
   blob.airEats = 0; blob.deflate = 0;
   treats = []; particles = []; popups = [];
+  marshmallows = [
+    { x: 62,  y: 196, w: 28, bob: 0,    sy: 1, syv: 0, drift: 0.15 },
+    { x: 178, y: 148, w: 28, bob: 3.1,  sy: 1, syv: 0, drift: -0.12 },
+  ];
   score = 0; hunger = 100; streak = 0; rush = 0; eatQueue = 0;
+  rain = 0; rainTimer = 2400;
+  quest = null; questCooldown = 120;
+  stats = { eaten: 0, bestCombo: 0, flops: 0, quests: 0 };
   bestSize = MIN_R; sizeTitle = titleFor(MIN_R);
   for (let i = 0; i < 7; i++) spawnTreat();
   state = "PLAY";
@@ -207,27 +232,39 @@ function newGame() {
 function hop() {
   blob.charging = false;
   let dx = pointer.x - blob.x, dy = pointer.y - (blob.y - blob.dr);
-  if (blob.onGround && dy > 0) dy = 0;                    // no diving into the floor
+  if (blob.onGround && dy > 0) dy = 0;
   const len = Math.max(1, Math.hypot(dx, dy));
   const sp = 3.2 + blob.power * 5.8 + blob.dr * 0.02;
   blob.vx = dx / len * sp;
-  blob.vy = Math.min(dy / len * sp, -1.5);                // always leave the ground
+  blob.vy = Math.min(dy / len * sp, -1.5);
   blob.onGround = false;
   blob.airEats = 0;
-  blob.sy = 1.35; blob.sx = 0.75;                         // stretch upward on takeoff
+  blob.sy = 1.35; blob.sx = 0.75;
   spawnDust(blob.x, blob.y, 6);
   sfx.hop(blob.power);
 }
 
-function spawnTreat() {
+function spawnTreat(fallFromSky) {
+  const chiliW = 0.08 + rankIdx(blob.r) * 0.015;
   const roll = Math.random();
   let type;
-  if (roll < 0.38) type = "candy";
-  else if (roll < 0.62) type = "choc";
-  else if (roll < 0.82) type = "cake";
-  else if (roll < 0.93) type = "chili";
-  else type = "donut";
-  const air = Math.random() < 0.45;
+  if (fallFromSky) {
+    // cake rain: pure treats only
+    if (roll < 0.03) type = "gold";
+    else if (roll < 0.42) type = "candy";
+    else if (roll < 0.68) type = "choc";
+    else if (roll < 0.92) type = "cake";
+    else type = "donut";
+  } else {
+    if (roll < 0.025) type = "gold";
+    else if (roll < 0.37) type = "candy";
+    else if (roll < 0.60) type = "choc";
+    else if (roll < 0.80) type = "cake";
+    else if (roll < 0.80 + chiliW) type = "chili";
+    else type = "donut";
+  }
+  const flyer = type === "donut";                          // donuts fly!
+  const air = flyer || Math.random() < 0.45;
   let x, y, tries = 0;
   do {
     x = 22 + rand(W - 44);
@@ -235,11 +272,14 @@ function spawnTreat() {
     tries++;
   } while (tries < 12 && Math.hypot(x - blob.x, y - (blob.y - blob.dr)) < blob.dr + 45);
   treats.push({
-    x, y, type, r: TREATS[type].r, air,
+    x, y: fallFromSky ? -8 : y, type, r: TREATS[type].r, air,
     bob: Math.random() * 6.28,
+    vx: flyer ? (Math.random() < 0.5 ? 1 : -1) * (0.35 + Math.random() * 0.3) : 0,
+    vy: 0, falling: !!fallFromSky,
+    ttl: fallFromSky ? 700 : (type === "chili" ? 800 : -1), // rained treats + chilis eventually melt
     state: "idle", eatT: 0, sx: x, sy: y,
     candyC: rand(CANDY_COLORS.length),
-    pop: 10,                                              // spawn pop-in
+    pop: fallFromSky ? 0 : 10,
   });
 }
 
@@ -251,11 +291,28 @@ function startDevour(tr) {
   sfx.chomp();
 }
 
+function questEvent(kind, arg) {
+  if (!quest) return;
+  if (kind === "eat" && quest.kind === "eat" && quest.target === arg) quest.progress++;
+  else if (kind === "combo" && quest.kind === "combo" && arg >= quest.n) quest.progress = quest.n;
+  else if (kind === "flop" && quest.kind === "flop") quest.progress++;
+  else return;
+  if (quest.progress >= quest.n) {
+    score += 400;
+    hunger = Math.min(100, hunger + 25);
+    stats.quests++;
+    popups.push({ x: W / 2, y: 150, text: "QUEST CLEAR! +400", life: 70, color: PAL.gold, big: true });
+    spawnBurst(blob.x, blob.y - blob.dr, PAL.gold, 14);
+    sfx.quest();
+    quest = null;
+    questCooldown = 300;
+  }
+}
+
 function finishDevour(tr) {
   eatQueue--;
   const def = TREATS[tr.type];
   if (tr.type === "chili") {
-    // SOUR! shrink
     blob.r = Math.max(MIN_R, blob.r + def.val);
     sizeTitle = titleFor(blob.r);
     blob.face = "sour"; blob.faceT = 50;
@@ -267,42 +324,57 @@ function finishDevour(tr) {
     sfx.sour();
   } else {
     const mult = (rush > 0 ? 2 : 1);
-    const airBonus = blob.airEats;                        // combo: eats within one hop
+    const airBonus = blob.airEats;
+    const comboN = airBonus + 1;
     blob.airEats++;
+    stats.eaten++;
+    stats.bestCombo = Math.max(stats.bestCombo, comboN);
     blob.r = Math.min(MAX_R, blob.r + def.val * mult * 0.9);
     hunger = Math.min(100, hunger + def.feed);
     streak++;
-    const pts = def.pts * mult * (1 + airBonus);
+    const pts = def.pts * mult * Math.min(comboN, 5);      // multiplier capped at x5
     score += pts;
     blob.face = "happy"; blob.faceT = 35;
-    blob.gulp = 0;                                        // start gulp bulge
+    blob.gulp = 0;
     blob.chew = 14;
     popups.push({
       x: blob.x, y: blob.y - blob.dr * 2 - 8,
-      text: airBonus > 0 ? "+" + pts + " x" + (1 + airBonus) : "+" + pts,
-      life: 40, color: airBonus > 0 ? PAL.gold : PAL.white,
+      text: "+" + pts, life: 40, color: airBonus > 0 ? PAL.gold : PAL.white,
     });
+    if (comboN >= 2) {
+      popups.push({ x: W / 2, y: 120, text: "COMBO x" + comboN + "!", life: 50, color: RAINBOW[comboN % 6], big: true });
+      // burp hearts on big combos
+      if (comboN >= 3) for (let i = 0; i < 5; i++) particles.push({
+        x: blob.x + (Math.random() - 0.5) * 10, y: blob.y - blob.dr * 1.6,
+        vx: (Math.random() - 0.5) * 1.2, vy: -0.8 - Math.random(),
+        life: 30 + rand(14), color: "#ff88b0", grav: false,
+      });
+    }
+    if (tr.type === "gold") {
+      popups.push({ x: W / 2, y: 100, text: "GOLDEN CAKE! TUMMY FULL!", life: 70, color: PAL.gold, big: true });
+      spawnBurst(blob.x, blob.y - blob.dr, PAL.gold, 20);
+      sfx.gold();
+    }
     spawnCrumbs(blob.x, blob.y - blob.dr, treatColors(tr)[0], 8);
     sfx.gulp();
-    // size milestone?
+    questEvent("eat", tr.type);
+    questEvent("combo", comboN);
     const newTitle = titleFor(blob.r);
     if (newTitle !== sizeTitle) {
       sizeTitle = newTitle;
       score += 200;
-      popups.push({ x: W / 2, y: 130, text: newTitle + "! +200", life: 70, color: PAL.gold });
+      popups.push({ x: W / 2, y: 135, text: newTitle + "! +200", life: 70, color: PAL.gold, big: true });
       spawnBurst(blob.x, blob.y - blob.dr, PAL.gold, 16);
       sfx.grow();
       shake = 4;
     }
     if (blob.r > bestSize) bestSize = blob.r;
-    // sugar rush at streak 8
     if (streak > 0 && streak % 8 === 0) {
       rush = 380;
-      popups.push({ x: W / 2, y: 110, text: "SUGAR RUSH!", life: 80, color: RAINBOW[t % 6] });
+      popups.push({ x: W / 2, y: 110, text: "SUGAR RUSH!", life: 80, color: RAINBOW[t % 6], big: true });
       sfx.rush();
     }
   }
-  // squash of satisfaction + spring
   blob.syv -= 0.25;
 }
 
@@ -346,42 +418,82 @@ function update() {
   if (blob.blink > 0) blob.blink--;
   else if (rand(140) === 0) blob.blink = 6;
 
-  // squash spring back to 1
   blob.sxv += (1 - blob.sx) * 0.22; blob.sxv *= 0.78; blob.sx += blob.sxv;
   blob.syv += (1 - blob.sy) * 0.22; blob.syv *= 0.78; blob.sy += blob.syv;
-
-  // displayed radius eases toward target — the "growing" animation
   blob.dr = lerp(blob.dr, blob.r, 0.08);
+
+  // marshmallow springs + drift
+  for (const mm of marshmallows) {
+    mm.syv += (1 - mm.sy) * 0.2; mm.syv *= 0.8; mm.sy += mm.syv;
+    mm.x += Math.sin(t * 0.008 + mm.bob) * mm.drift;
+    mm.x = Math.max(WALL_L + mm.w / 2 + 4, Math.min(WALL_R - mm.w / 2 - 4, mm.x));
+  }
 
   if (state !== "PLAY") { updateFx(); return; }
 
-  // charging: blob squats down, power builds
+  // ---- cake rain event ----
+  if (rain > 0) {
+    rain--;
+    if (rain % 12 === 0 && treats.length < 16) spawnTreat(true);
+    if (rain === 0) rainTimer = 2200 + rand(900);
+  } else {
+    rainTimer--;
+    if (rainTimer <= 0) {
+      rain = 300;
+      sfx.rain();
+    }
+  }
+
+  // ---- quests ----
+  if (!quest) {
+    questCooldown--;
+    if (questCooldown <= 0) {
+      const def = QUEST_DEFS[rand(QUEST_DEFS.length)];
+      quest = Object.assign({ progress: 0 }, def);
+      popups.push({ x: W / 2, y: 165, text: "QUEST: " + def.label, life: 70, color: "#88d8ff" });
+    }
+  }
+
   if (blob.charging) {
     blob.power = Math.min(1, blob.power + 0.03);
     blob.sy = lerp(blob.sy, 0.62 + 0.1 * Math.sin(t * 0.5), 0.3);
     blob.sx = lerp(blob.sx, 1.3, 0.3);
   }
 
-  // physics
+  // ---- blob physics ----
   if (!blob.onGround) {
     blob.vy += GRAV;
     blob.x += blob.vx;
     blob.y += blob.vy;
-    // stretch along motion
     const sp = Math.hypot(blob.vx, blob.vy);
     blob.sy = lerp(blob.sy, 1 + Math.min(0.35, sp * 0.045), 0.3);
     blob.sx = lerp(blob.sx, 1 - Math.min(0.25, sp * 0.03), 0.3);
-    // walls
     if (blob.x < WALL_L + blob.dr) { blob.x = WALL_L + blob.dr; blob.vx = Math.abs(blob.vx) * 0.75; blob.sx = 0.7; sfx.bounce(); }
     if (blob.x > WALL_R - blob.dr) { blob.x = WALL_R - blob.dr; blob.vx = -Math.abs(blob.vx) * 0.75; blob.sx = 0.7; sfx.bounce(); }
-    if (blob.y - blob.dr * 2 < 18 && blob.vy < 0) { blob.vy = Math.abs(blob.vy) * 0.6; }
-    // landing
+    if (blob.y - blob.dr * 2 < 30 && blob.vy < 0) { blob.vy = Math.abs(blob.vy) * 0.6; }
+
+    // marshmallow trampolines (falling only, combo keeps going!)
+    if (blob.vy > 1) {
+      for (const mm of marshmallows) {
+        if (Math.abs(blob.x - mm.x) < mm.w / 2 + blob.dr * 0.5 &&
+            blob.y >= mm.y - 5 && blob.y <= mm.y + 7) {
+          blob.y = mm.y - 4;
+          blob.vy = -Math.min(9.5, Math.max(6.2, blob.vy * 0.95));
+          blob.sy = 0.6; blob.sx = 1.35;
+          mm.sy = 0.45;
+          spawnDust(blob.x, mm.y + 2, 5);
+          sfx.boing();
+          break;
+        }
+      }
+    }
+
     if (blob.y >= GROUND) {
       blob.y = GROUND;
       const impact = blob.vy;
       if (impact > 5 && blob.dr >= 16) bellyFlop(impact);
       if (impact > 1.4) {
-        blob.vy = -impact * 0.42;                          // bounce!
+        blob.vy = -impact * 0.42;
         blob.sy = Math.max(0.45, 1 - impact * 0.09);
         blob.sx = Math.min(1.6, 1 + impact * 0.09);
         spawnDust(blob.x, blob.y, Math.min(10, 2 + impact | 0));
@@ -389,6 +501,7 @@ function update() {
       } else {
         blob.vy = 0;
         blob.onGround = true;
+        blob.airEats = 0;                                  // combo chain ends when settled
         blob.sy = 0.8; blob.sx = 1.2;
       }
       blob.vx *= 0.8;
@@ -397,25 +510,22 @@ function update() {
     blob.vx *= 0.85;
     blob.x += blob.vx;
     blob.x = Math.max(WALL_L + blob.dr, Math.min(WALL_R - blob.dr, blob.x));
-    // idle bob
     if (!blob.charging && Math.abs(blob.sy - 1) < 0.05) {
       blob.sy = 1 + Math.sin(t * 0.08) * 0.03;
       blob.sx = 1 - Math.sin(t * 0.08) * 0.02;
     }
   }
 
-  // look direction
   blob.look = lerp(blob.look, Math.max(-1, Math.min(1, (pointer.x - blob.x) / 60)), 0.15);
 
-  // hunger
+  // ---- hunger ----
   if (blob.deflate === 0) {
     hunger -= 0.03 + blob.dr * 0.0017;
     if (hunger <= 0) { hunger = 0; startDeflate(); }
   } else {
-    // deflating: shrink & sputter
     blob.deflate++;
     blob.r = Math.max(4, blob.r - 0.35);
-    if (blob.deflate % 4 === 0) spawnBurst(blob.x + (Math.random()-0.5)*blob.dr, blob.y - blob.dr, PAL.blobLight, 2);
+    if (blob.deflate % 4 === 0) spawnBurst(blob.x + (Math.random() - 0.5) * blob.dr, blob.y - blob.dr, PAL.blobLight, 2);
     if (blob.deflate > 70) {
       state = "GAMEOVER";
       gameOverT = 50;
@@ -425,8 +535,8 @@ function update() {
     }
   }
 
-  // treats
-  const cx = blob.x, cy = blob.y - blob.dr;               // blob center
+  // ---- treats ----
+  const cx = blob.x, cy = blob.y - blob.dr;
   const mouthOpenNear = treats.some(tr => tr.state === "idle" &&
       Math.hypot(tr.x - cx, tr.y - cy) < blob.dr + tr.r + 26);
   blob.mouth = lerp(blob.mouth, (eatQueue > 0 || mouthOpenNear) ? 1 : 0, 0.25);
@@ -435,8 +545,20 @@ function update() {
     const tr = treats[i];
     if (tr.pop > 0) tr.pop--;
     if (tr.state === "idle") {
-      if (tr.air) tr.y += Math.sin(t * 0.05 + tr.bob) * 0.25;
-      // sugar rush magnet
+      // rained treats melt after a while
+      if (tr.ttl > 0) { tr.ttl--; if (tr.ttl === 0) { treats.splice(i, 1); continue; } }
+      if (tr.falling) {
+        tr.vy = Math.min(2.2, tr.vy + 0.1);
+        tr.y += tr.vy;
+        if (tr.y >= GROUND - tr.r) { tr.y = GROUND - tr.r; tr.falling = false; tr.air = false; spawnDust(tr.x, GROUND, 2); }
+      } else if (tr.vx !== 0) {
+        // flying donut drifts and bounces off walls
+        tr.x += tr.vx;
+        if (tr.x < WALL_L + 12 || tr.x > WALL_R - 12) tr.vx *= -1;
+        tr.y += Math.sin(t * 0.08 + tr.bob) * 0.5;
+      } else if (tr.air) {
+        tr.y += Math.sin(t * 0.05 + tr.bob) * 0.25;
+      }
       if (rush > 0 && tr.type !== "chili") {
         const d = Math.hypot(tr.x - cx, tr.y - cy);
         if (d < 90) { tr.x += (cx - tr.x) / d * 1.6; tr.y += (cy - tr.y) / d * 1.6; }
@@ -444,7 +566,6 @@ function update() {
       const d = Math.hypot(tr.x - cx, tr.y - cy);
       if (d < blob.dr + tr.r - 1 && blob.deflate === 0) startDevour(tr);
     } else {
-      // devour tween: sucked into the mouth
       tr.eatT += 0.09;
       const k = Math.min(1, tr.eatT);
       const ease = k * k * (3 - 2 * k);
@@ -457,16 +578,16 @@ function update() {
       }
     }
   }
-  // keep the buffet stocked
   while (treats.length < 7) spawnTreat();
 
   updateFx();
 }
 
 function bellyFlop(impact) {
-  // big blob slams the ground: shockwave slurps nearby floor treats
   shake = Math.min(8, impact);
   sfx.flop();
+  stats.flops++;
+  questEvent("flop");
   const range = blob.dr * 2.4;
   for (const tr of treats) {
     if (tr.state === "idle" && tr.type !== "chili" && tr.y > GROUND - 30 && Math.abs(tr.x - blob.x) < range) {
@@ -511,44 +632,40 @@ function treatColors(tr) {
   if (tr.type === "choc")  return ["#8a5430", "#c08850"];
   if (tr.type === "cake")  return ["#e8607a", "#ffb0c8"];
   if (tr.type === "donut") return ["#e8a0b8", "#ffd0e0"];
+  if (tr.type === "gold")  return [PAL.gold, "#fff0a0"];
   return ["#e03030", "#58c868"];
 }
 
 function drawTreat(tr) {
-  const s = tr.pop > 0 ? 1 - tr.pop / 12 : 1;             // pop-in scale
+  const s = tr.pop > 0 ? 1 - tr.pop / 12 : 1;
   const shrink = tr.state === "eaten" ? Math.max(0.15, 1 - tr.eatT * 0.9) : 1;
   const sc = s * shrink;
   const x = Math.round(tr.x), y = Math.round(tr.y);
   const wob = tr.state === "eaten" ? Math.round(Math.sin(tr.eatT * 25) * 2) : 0;
+  // melting blink for expiring rained treats
+  if (tr.ttl > 0 && tr.ttl < 120 && (t >> 3) % 2) return;
 
   ctx.save();
   if (sc < 1) { ctx.translate(x, y); ctx.scale(sc, sc); ctx.translate(-x, -y); }
 
   if (tr.type === "candy") {
     const [c1, c2] = CANDY_COLORS[tr.candyC];
-    // wrapper twists
     px(x - 8 + wob, y - 2, 3, 4, c1);
     px(x + 5 + wob, y - 2, 3, 4, c1);
-    // body
     px(x - 5 + wob, y - 4, 10, 8, c1);
     px(x - 4 + wob, y - 5, 8, 10, c1);
-    // swirl stripes
     px(x - 3 + wob, y - 4, 2, 8, c2);
     px(x + 1 + wob, y - 4, 2, 8, c2);
     px(x - 4 + wob, y - 4, 2, 2, PAL.white);
   } else if (tr.type === "choc") {
-    // chocolate bar with foil end
     px(x - 8 + wob, y - 5, 16, 10, "#6a3c1e");
     px(x - 7 + wob, y - 4, 14, 8, "#8a5430");
-    // segments
     px(x - 3 + wob, y - 4, 1, 8, "#6a3c1e");
     px(x + 2 + wob, y - 4, 1, 8, "#6a3c1e");
     px(x - 7 + wob, y, 14, 1, "#6a3c1e");
-    // foil wrapper on left end
     px(x - 9 + wob, y - 6, 5, 12, "#ffd24a");
     px(x - 9 + wob, y - 6, 5, 2, "#fff0a0");
     px(x - 6 + wob, y - 3, 1, 6, "#c8a030");
-    // shine
     px(x + 4 + wob, y - 4, 2, 1, "#c08850");
   } else if (tr.type === "cake") {
     px(x - 7 + wob, y - 1, 14, 7, "#e8607a");
@@ -560,30 +677,57 @@ function drawTreat(tr) {
     px(x - 4 + wob, y - 5, 3, 1, "#ffd8e4");
     px(x - 1 + wob, y - 8, 2, 3, "#e03050");
     px(x - 1 + wob, y - 9, 1, 1, "#802040");
+  } else if (tr.type === "gold") {
+    // golden cake — sparkles!
+    px(x - 7 + wob, y - 1, 14, 7, "#d8a020");
+    px(x - 6 + wob, y + 6, 12, 1, "#805808");
+    px(x - 7 + wob, y - 4, 14, 3, PAL.gold);
+    px(x - 6 + wob, y - 5, 12, 1, PAL.gold);
+    px(x - 4 + wob, y - 5, 3, 1, "#fff0a0");
+    px(x - 1 + wob, y - 8, 2, 3, "#fff");
+    const sp = (t >> 2) % 4;
+    if (sp === 0) { px(x - 10, y - 8, 2, 2, PAL.white); }
+    if (sp === 1) { px(x + 9, y - 4, 2, 2, PAL.white); }
+    if (sp === 2) { px(x - 9, y + 3, 2, 2, PAL.white); }
+    if (sp === 3) { px(x + 7, y - 9, 2, 2, PAL.white); }
   } else if (tr.type === "donut") {
+    // winged flying donut
+    const flap = (t >> 3) % 2;
+    px(x - 12 + wob, y - (flap ? 6 : 3), 4, 4, PAL.white);
+    px(x + 8 + wob, y - (flap ? 6 : 3), 4, 4, PAL.white);
     px(x - 8 + wob, y - 6, 16, 12, "#c88848");
     px(x - 8 + wob, y - 6, 16, 8, "#e8a0b8");
     px(x - 6 + wob, y - 7, 12, 2, "#e8a0b8");
-    // hole
     px(x - 2 + wob, y - 2, 4, 4, PAL.skyLow);
-    // sprinkles
     px(x - 6 + wob, y - 5, 2, 1, "#ffe858");
     px(x + 3 + wob, y - 6, 1, 2, "#58b8ff");
     px(x - 1 + wob, y - 7, 2, 1, "#68e078");
     px(x + 5 + wob, y - 3, 2, 1, "#fff");
   } else if (tr.type === "chili") {
-    // angry little pepper
     px(x - 4 + wob, y - 3, 8, 6, "#e03030");
     px(x - 5 + wob, y - 1, 3, 4, "#e03030");
     px(x + 3 + wob, y - 2, 3, 3, "#c02020");
     px(x - 3 + wob, y - 2, 2, 2, "#ff7060");
-    // stem
     px(x + 4 + wob, y - 5, 3, 3, "#58c868");
     px(x + 6 + wob, y - 6, 2, 2, "#388848");
-    // warning blink
     if ((t >> 4) % 2) px(x - 1 + wob, y - 10, 2, 2, PAL.danger);
   }
   ctx.restore();
+}
+
+function drawMarshmallow(mm) {
+  const x = Math.round(mm.x), y = Math.round(mm.y);
+  const h = Math.round(9 * mm.sy);
+  const w2 = Math.round(mm.w / 2 * (2 - mm.sy) * 0.85 + mm.w / 2 * 0.15);
+  const bobY = Math.round(Math.sin(t * 0.04 + mm.bob) * 2);
+  // pillow
+  px(x - w2, y + bobY - h + 2, w2 * 2, h, "#fff4f8");
+  px(x - w2 + 2, y + bobY - h, w2 * 2 - 4, h + 2, "#fff4f8");
+  // shading + pink dust
+  px(x - w2 + 2, y + bobY, w2 * 2 - 4, 2, "#e8c8d8");
+  px(x - w2 + 3, y + bobY - h + 1, 4, 1, "#ffffff");
+  px(x + w2 - 8, y + bobY - h + 3, 3, 1, "#ffd8e8");
+  px(x - 2, y + bobY - h + 2, 2, 1, "#ffd8e8");
 }
 
 // scanline-filled elliptical blob with squash/stretch, gulp bulge, face
@@ -592,12 +736,11 @@ function drawBlob() {
   const rx = r * blob.sx, ry = r * blob.sy;
   const bx = Math.round(blob.x);
   const bot = Math.round(blob.y);
-  const cy = bot - ry;                                    // center
+  const cy = bot - ry;
 
   const rushGlow = rush > 0;
-  const bodyC  = rushGlow && (t >> 2) % 2 ? PAL.blobLight : PAL.blob;
+  const bodyC = rushGlow && (t >> 2) % 2 ? PAL.blobLight : PAL.blob;
 
-  // rainbow aura during sugar rush
   if (rushGlow) {
     const ac = RAINBOW[(t >> 2) % 6];
     for (let dy = -ry - 2; dy <= ry + 2; dy += 2) {
@@ -608,7 +751,6 @@ function drawBlob() {
     }
   }
 
-  // body scanlines (with gulp bulge)
   const gulpY = blob.gulp >= 0 ? -ry + blob.gulp * ry * 2 : null;
   for (let dy = -Math.round(ry); dy <= Math.round(ry); dy++) {
     const q = 1 - (dy / ry) ** 2;
@@ -620,7 +762,6 @@ function drawBlob() {
     }
     px(bx - w, cy + dy, w * 2, 1, bodyC);
   }
-  // bottom shading
   for (let dy = Math.round(ry * 0.55); dy <= Math.round(ry); dy++) {
     const q = 1 - (dy / ry) ** 2;
     if (q <= 0) continue;
@@ -632,19 +773,17 @@ function drawBlob() {
     px(bx - w, cy + dy, 3, 1, PAL.blobDark);
     px(bx + w - 3, cy + dy, 3, 1, PAL.blobDark);
   }
-  // top-left highlight
   const hw = Math.max(2, r * 0.35);
   px(bx - rx * 0.5, cy - ry * 0.6, hw, Math.max(1, r * 0.12), PAL.blobHi);
   px(bx - rx * 0.6, cy - ry * 0.45, Math.max(1, r * 0.14), Math.max(1, r * 0.2), PAL.blobHi);
 
   // ----- face -----
-  const es = Math.max(2, Math.round(r * 0.16));           // eye size
+  const es = Math.max(2, Math.round(r * 0.16));
   const eyeY = cy - ry * 0.18;
   const eyeDX = rx * 0.36;
   const lookX = Math.round(blob.look * Math.max(1, r * 0.1));
 
   if (blob.face === "sour") {
-    // >< eyes
     ctx.fillStyle = PAL.black;
     for (let i = 0; i < es; i++) {
       px(bx - eyeDX - es + i, eyeY - es + i, 2, 2, PAL.black);
@@ -653,20 +792,17 @@ function drawBlob() {
       px(bx + eyeDX + es - i - 2, eyeY + es - i, 2, 2, PAL.black);
     }
   } else if (blob.face === "happy" || blob.blink > 0) {
-    // ^ ^ closed happy eyes
     for (let i = 0; i <= es; i++) {
       px(bx - eyeDX - es + i, eyeY + Math.abs(i - es / 2) - es / 2, 2, 2, PAL.black);
       px(bx + eyeDX - es + i, eyeY + Math.abs(i - es / 2) - es / 2, 2, 2, PAL.black);
     }
   } else {
-    // open eyes with pupils + shine
     px(bx - eyeDX - es / 2 + lookX, eyeY - es, es, es * 2, PAL.black);
     px(bx + eyeDX - es / 2 + lookX, eyeY - es, es, es * 2, PAL.black);
     px(bx - eyeDX - es / 2 + lookX, eyeY - es, Math.max(1, es / 2), Math.max(1, es / 2), PAL.white);
     px(bx + eyeDX - es / 2 + lookX, eyeY - es, Math.max(1, es / 2), Math.max(1, es / 2), PAL.white);
   }
 
-  // blush when happy
   if (blob.face === "happy") {
     px(bx - eyeDX - es * 1.6, eyeY + es * 1.5, es * 1.4, Math.max(1, es * 0.7), "#e880b8");
     px(bx + eyeDX + es * 0.3, eyeY + es * 1.5, es * 1.4, Math.max(1, es * 0.7), "#e880b8");
@@ -677,7 +813,6 @@ function drawBlob() {
   const chompShut = blob.chew > 0 && (blob.chew >> 1) % 2 === 0;
   const mo = chompShut ? 0.15 : blob.mouth;
   if (mo > 0.15) {
-    // wide open mouth
     const mw = Math.max(4, r * (0.5 + mo * 0.45));
     const mh = Math.max(3, r * mo * 0.6);
     for (let dy = 0; dy < mh; dy++) {
@@ -685,18 +820,13 @@ function drawBlob() {
       const w2 = mw * 0.5 * Math.sqrt(Math.max(0, q));
       px(bx - w2 + lookX, my - mh / 2 + dy, w2 * 2, 1, PAL.mouth);
     }
-    // tongue
     px(bx - mw * 0.22 + lookX, my + mh * 0.05, mw * 0.44, Math.max(1, mh * 0.3), PAL.tongue);
-    // teeth glint
     px(bx - mw * 0.3 + lookX, my - mh / 2, 2, 2, PAL.white);
     px(bx + mw * 0.2 + lookX, my - mh / 2, 2, 2, PAL.white);
   } else if (blob.face === "sour") {
-    // wavy sad mouth
     for (let i = -3; i <= 3; i++) px(bx + i * 2 + lookX, my + (i % 2 ? 1 : 0), 2, 2, PAL.black);
-    // sweat drop
     px(bx + rx * 0.55, cy - ry * 0.45 + (t >> 2) % 4, 2, 3, "#a0d8ff");
   } else {
-    // little smile
     px(bx - 2 + lookX, my, 4 + Math.max(0, r * 0.1), 2, PAL.blobDark);
   }
 
@@ -709,11 +839,19 @@ function drawBlob() {
     px(bx + 5, crY, 3, 4, PAL.gold);
     px(bx - 1, crY + 4, 2, 2, "#e03050");
   }
+
+  // HUNGRY! warning above blob
+  if (state === "PLAY" && hunger < 25 && blob.deflate === 0 && (t >> 4) % 2) {
+    ctx.font = "8px monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = PAL.danger;
+    ctx.fillText("HUNGRY!", bx, cy - ry - 12);
+    ctx.textAlign = "left";
+  }
 }
 
 function drawChargeUI() {
   if (!blob.charging) return;
-  // arc preview
   const dxp = pointer.x - blob.x, dyp = Math.min(0, pointer.y - (blob.y - blob.dr));
   const len = Math.max(1, Math.hypot(dxp, dyp));
   const sp = 3.2 + blob.power * 5.8 + blob.dr * 0.02;
@@ -727,7 +865,6 @@ function drawChargeUI() {
     if (sy > GROUND) break;
     if (i % 3 === 0) px(sx - 1, sy - 1, 2, 2, f);
   }
-  // power bar over blob
   const bw = 24;
   const bx = blob.x - bw / 2, by = blob.y - blob.dr * 2 - 14;
   px(bx - 1, by - 1, bw + 2, 6, PAL.black);
@@ -736,21 +873,17 @@ function drawChargeUI() {
 function FLASH() { return (t >> 2) % 2 ? PAL.white : PAL.gold; }
 
 function drawBG() {
-  // sky bands
   px(0, 0, W, 110, PAL.skyTop);
   px(0, 110, W, 90, PAL.skyMid);
   px(0, 200, W, 90, PAL.skyLow);
-  // sprinkle stars
   for (let i = 0; i < 24; i++) {
     const sx = (i * 97 + 31) % W, sy = (i * 61 + 17) % 170;
     if ((t >> 3) % 8 !== i % 8) px(sx, sy, 1, 1, i % 3 ? "#6a5a9a" : "#9a8aca");
   }
-  // cookie moon
-  px(190, 34, 24, 24, "#e8c888");
-  px(194, 30, 16, 32, "#e8c888");
-  px(188, 38, 28, 16, "#e8c888");
-  px(196, 40, 4, 4, "#b89058"); px(206, 48, 3, 3, "#b89058"); px(199, 52, 3, 2, "#b89058");
-  // candy hills
+  px(190, 40, 24, 24, "#e8c888");
+  px(194, 36, 16, 32, "#e8c888");
+  px(188, 44, 28, 16, "#e8c888");
+  px(196, 46, 4, 4, "#b89058"); px(206, 54, 3, 3, "#b89058"); px(199, 58, 3, 2, "#b89058");
   for (let x = 0; x < W; x += 4) {
     const h1 = 30 + Math.sin(x * 0.03) * 14;
     px(x, 240 - h1, 4, h1, PAL.hill2);
@@ -759,9 +892,7 @@ function drawBG() {
     const h2 = 26 + Math.sin(x * 0.045 + 2) * 12;
     px(x, 262 - h2, 4, h2, PAL.hill1);
   }
-  // lollipop trees
   lolly(30, 236, 0); lolly(205, 240, 1); lolly(120, 232, 2);
-  // wafer floor
   px(0, GROUND, W, H - GROUND, PAL.floor);
   px(0, GROUND, W, 2, "#ffd0e0");
   for (let x = 0; x < W; x += 12) px(x, GROUND + 6, 1, H - GROUND, PAL.floorLine);
@@ -776,6 +907,106 @@ function lolly(x, y, i) {
   px(x - 2, y - 20, 3, 3, PAL.white);
 }
 
+// ---------- HUD ----------
+function drawHUD() {
+  // top panel
+  px(0, 0, W, 26, PAL.panel);
+  px(0, 26, W, 1, PAL.panelHi);
+  ctx.font = "8px monospace";
+
+  // score with star
+  px(4, 4, 2, 2, PAL.gold); px(2, 6, 6, 2, PAL.gold); px(4, 8, 2, 2, PAL.gold);
+  px(3, 9, 1, 1, PAL.gold); px(6, 9, 1, 1, PAL.gold);
+  ctx.fillStyle = PAL.text;
+  ctx.fillText(String(score), 12, 11);
+  ctx.fillStyle = PAL.dim;
+  ctx.fillText("BEST " + best, 12, 21);
+
+  // rank badge with progress to next rank
+  const ri = rankIdx(blob.r);
+  const badgeW = 62;
+  const bx0 = 96;
+  px(bx0 - 2, 3, badgeW + 4, 9, PAL.panelHi);
+  px(bx0 - 1, 4, badgeW + 2, 7, PAL.panel);
+  ctx.fillStyle = rush > 0 ? RAINBOW[(t >> 3) % 6] : PAL.gold;
+  ctx.textAlign = "center";
+  ctx.fillText(sizeTitle, bx0 + badgeW / 2, 10);
+  ctx.textAlign = "left";
+  // progress bar to next rank
+  if (ri < RANKS.length - 1) {
+    const cur = RANKS[ri][1], nxt = RANKS[ri + 1][1];
+    const p = Math.max(0, Math.min(1, (blob.r - cur) / (nxt - cur)));
+    px(bx0, 13, badgeW, 3, PAL.black);
+    px(bx0, 13, badgeW * p, 3, "#b878f0");
+  } else {
+    px(bx0, 13, badgeW, 3, PAL.gold);
+  }
+  // streak pips → sugar rush
+  const pipN = streak % 8;
+  for (let i = 0; i < 8; i++) {
+    const on = i < pipN || rush > 0;
+    px(bx0 + i * 8, 19, 5, 4, on ? RAINBOW[i % 6] : "#3b2a5e");
+  }
+
+  // tummy bar with heart
+  const hbw = 60, hbx = W - hbw - 6, hby = 4;
+  px(hbx - 12, hby, 3, 3, "#ff6088"); px(hbx - 8, hby, 3, 3, "#ff6088");
+  px(hbx - 12, hby + 2, 7, 3, "#ff6088"); px(hbx - 10, hby + 5, 3, 2, "#ff6088");
+  px(hbx - 1, hby - 1, hbw + 2, 9, PAL.panelHi);
+  px(hbx, hby, hbw, 7, PAL.black);
+  const hw2 = hbw * hunger / 100;
+  for (let i = 0; i < hw2; i += 4) {
+    px(hbx + i, hby + 1, Math.min(4, hw2 - i), 5, (i / 4) % 2 ? "#ff8098" : (hunger < 25 && (t >> 3) % 2 ? PAL.danger : "#ffb0c0"));
+  }
+  // rush timer under tummy bar
+  if (rush > 0) px(hbx, hby + 9, hbw * rush / 380, 2, RAINBOW[(t >> 2) % 6]);
+  ctx.fillStyle = PAL.dim;
+  ctx.fillText("TUMMY", hbx + 14, 22);
+
+  // quest chip (bottom-left)
+  if (quest && state === "PLAY") {
+    const qw = 108;
+    px(2, H - 18, qw, 16, PAL.panel);
+    px(2, H - 18, qw, 1, PAL.panelHi);
+    px(2, H - 3, qw, 1, PAL.panelHi);
+    px(5, H - 13, 6, 6, "#88d8ff");
+    px(7, H - 15, 2, 2, "#88d8ff");
+    ctx.fillStyle = PAL.text;
+    ctx.fillText(quest.label, 15, H - 10);
+    ctx.fillStyle = quest.progress > 0 ? PAL.gold : PAL.dim;
+    ctx.fillText(quest.progress + "/" + quest.n, 15, H - 2 + 0);
+    // progress ticks
+    for (let i = 0; i < quest.n; i++) {
+      px(44 + i * 7, H - 8, 5, 4, i < quest.progress ? PAL.gold : "#3b2a5e");
+    }
+  }
+
+  // cake rain banner
+  if (rain > 0 && state === "PLAY") {
+    ctx.textAlign = "center";
+    ctx.font = "10px monospace";
+    const txt = "CAKE RAIN!";
+    for (let i = 0; i < txt.length; i++) {
+      const cxp = W / 2 - txt.length * 3 + i * 7;
+      const cyp = 44 + Math.sin(t * 0.25 + i * 0.8) * 3;
+      ctx.fillStyle = PAL.black;
+      ctx.fillText(txt[i], cxp + 1, cyp + 1);
+      ctx.fillStyle = RAINBOW[(i + (t >> 3)) % 6];
+      ctx.fillText(txt[i], cxp, cyp);
+    }
+    ctx.font = "8px monospace";
+    ctx.textAlign = "left";
+  }
+
+  // low hunger vignette
+  if (state === "PLAY" && hunger < 25 && blob.deflate === 0) {
+    const a = 0.12 + 0.1 * Math.sin(t * 0.15);
+    ctx.fillStyle = "rgba(255,40,70," + a.toFixed(3) + ")";
+    ctx.fillRect(0, 27, 4, H - 27); ctx.fillRect(W - 4, 27, 4, H - 27);
+    ctx.fillRect(4, 27, W - 8, 4); ctx.fillRect(4, H - 4, W - 8, 4);
+  }
+}
+
 function draw() {
   const sxs = shake > 0.5 ? (Math.random() - 0.5) * shake : 0;
   const sys = shake > 0.5 ? (Math.random() - 0.5) * shake : 0;
@@ -784,11 +1015,11 @@ function draw() {
 
   drawBG();
 
-  // shadow under blob
   const shR = blob.dr * (0.7 + 0.3 * Math.max(0, 1 - (GROUND - blob.y) / 120));
   ctx.fillStyle = "rgba(60,20,60,0.35)";
   ctx.fillRect(Math.round(blob.x - shR), GROUND + 2, Math.round(shR * 2), 3);
 
+  for (const mm of marshmallows) drawMarshmallow(mm);
   for (const tr of treats) if (tr.state === "idle") drawTreat(tr);
   drawBlob();
   for (const tr of treats) if (tr.state === "eaten") drawTreat(tr);  // on top: visibly sucked into the mouth
@@ -796,38 +1027,18 @@ function draw() {
 
   for (const p of particles) px(p.x, p.y, 2, 2, p.color);
 
-  ctx.font = "8px monospace";
   ctx.textAlign = "center";
   for (const p of popups) {
+    ctx.font = p.big ? "10px monospace" : "8px monospace";
     ctx.fillStyle = PAL.black;
     ctx.fillText(p.text, Math.round(p.x) + 1, Math.round(p.y) + 1);
     ctx.fillStyle = p.color;
     ctx.fillText(p.text, Math.round(p.x), Math.round(p.y));
   }
+  ctx.font = "8px monospace";
   ctx.textAlign = "left";
 
-  // ----- HUD -----
-  ctx.fillStyle = PAL.text;
-  ctx.fillText("SCORE " + score, 6, 10);
-  ctx.textAlign = "right";
-  ctx.fillText("BEST " + best, W - 6, 10);
-  ctx.textAlign = "left";
-  // size title
-  ctx.fillStyle = rush > 0 ? RAINBOW[(t >> 3) % 6] : PAL.gold;
-  ctx.fillText(sizeTitle, 6, 20);
-  // hunger bar (candy striped)
-  const hbw = 90, hbx = W - hbw - 6, hby = 14;
-  px(hbx - 1, hby - 1, hbw + 2, 7, PAL.black);
-  const hw2 = hbw * hunger / 100;
-  for (let i = 0; i < hw2; i += 4) {
-    px(hbx + i, hby, Math.min(4, hw2 - i), 5, (i / 4) % 2 ? "#ff8098" : (hunger < 25 && (t >> 3) % 2 ? PAL.danger : "#ffb0c0"));
-  }
-  ctx.fillStyle = PAL.text;
-  ctx.fillText("TUMMY", hbx - 38, hby + 6);
-  // rush timer
-  if (rush > 0) {
-    px(hbx - 1, hby + 8, (hbw + 2) * rush / 380, 3, RAINBOW[(t >> 2) % 6]);
-  }
+  drawHUD();
 
   if (state === "TITLE") drawTitle();
   if (state === "GAMEOVER") drawGameOver();
@@ -841,66 +1052,88 @@ function drawTitle() {
   ctx.textAlign = "center";
   ctx.font = "16px monospace";
   ctx.fillStyle = PAL.black;
-  ctx.fillText("BLOB BAKERY", W / 2 + 1, 71);
+  ctx.fillText("BLOB BAKERY", W / 2 + 1, 61);
   ctx.fillStyle = PAL.blobHi;
-  ctx.fillText("BLOB BAKERY", W / 2, 70);
+  ctx.fillText("BLOB BAKERY", W / 2, 60);
   ctx.font = "10px monospace";
   ctx.fillStyle = RAINBOW[(t >> 3) % 6];
-  ctx.fillText("* SUGAR RUSH *", W / 2, 86);
+  ctx.fillText("* SUGAR RUSH *", W / 2, 76);
 
   // bouncing demo blob (drawn at native pixels — no scaling artifacts)
   const bounce = Math.abs(Math.sin(t * 0.06));
-  const by = 168 - bounce * 30;
-  const sq = bounce < 0.15 ? 0.75 : 1 + bounce * 0.12;    // squash on touch-down
+  const by = 158 - bounce * 30;
+  const sq = bounce < 0.15 ? 0.75 : 1 + bounce * 0.12;
   const keep = { x: blob.x, y: blob.y, dr: blob.dr, sx: blob.sx, sy: blob.sy, mouth: blob.mouth, look: blob.look, chew: blob.chew };
   blob.x = W / 2; blob.y = by; blob.dr = 19; blob.sx = 2 - sq; blob.sy = sq;
   blob.mouth = (t >> 5) % 3 === 0 ? 1 : 0; blob.look = 0; blob.chew = 0;
   drawBlob();
   Object.assign(blob, keep);
 
+  // treat parade
+  const icons = ["cake", "choc", "candy", "donut", "gold"];
+  for (let i = 0; i < icons.length; i++) {
+    drawTreat({
+      x: 48 + i * 36, y: 196 + Math.sin(t * 0.08 + i) * 3,
+      type: icons[i], state: "idle", eatT: 0, pop: 0, ttl: -1,
+      candyC: i % CANDY_COLORS.length, bob: 0,
+    });
+  }
+
   ctx.font = "8px monospace";
   ctx.fillStyle = PAL.text;
-  ctx.fillText("HOLD = CHARGE  RELEASE = BOING", W / 2, 205);
-  ctx.fillText("EAT SWEETS. GROW HUGE.", W / 2, 218);
+  ctx.fillText("HOLD = CHARGE  RELEASE = BOING", W / 2, 222);
+  ctx.fillText("EAT SWEETS. GROW HUGE.", W / 2, 234);
+  ctx.fillText("BOUNCE OFF MARSHMALLOWS!", W / 2, 246);
   ctx.fillStyle = PAL.danger;
-  ctx.fillText("DO NOT EAT THE CHILI.", W / 2, 231);
+  ctx.fillText("DO NOT EAT THE CHILI.", W / 2, 258);
   if ((t >> 4) % 2) {
     ctx.fillStyle = PAL.gold;
-    ctx.fillText("- TAP TO START -", W / 2, 258);
+    ctx.fillText("- TAP TO START -", W / 2, 280);
   }
   if (best > 0) {
     ctx.fillStyle = PAL.text;
-    ctx.fillText("BEST " + best, W / 2, 274);
+    ctx.fillText("BEST " + best, W / 2, 296);
   }
   ctx.textAlign = "left";
 }
 
 function drawGameOver() {
-  ctx.fillStyle = "rgba(16,8,28,0.7)";
-  ctx.fillRect(0, 56, W, 140);
+  ctx.fillStyle = "rgba(16,8,28,0.75)";
+  ctx.fillRect(0, 48, W, 176);
+  px(20, 52, W - 40, 1, PAL.panelHi);
+  px(20, 220, W - 40, 1, PAL.panelHi);
   ctx.textAlign = "center";
   ctx.font = "14px monospace";
   ctx.fillStyle = PAL.danger;
-  ctx.fillText("OUT OF SNACKS!", W / 2, 88);
+  ctx.fillText("OUT OF SNACKS!", W / 2, 76);
   ctx.font = "8px monospace";
   ctx.fillStyle = PAL.text;
-  ctx.fillText("SCORE " + score, W / 2, 112);
-  ctx.fillText("PEAK FORM: " + titleFor(bestSize), W / 2, 128);
+  ctx.fillText("SCORE  " + score, W / 2, 100);
   if (score >= best && score > 0) {
     ctx.fillStyle = PAL.gold;
-    ctx.fillText("NEW BEST!", W / 2, 148);
+    ctx.fillText("NEW BEST!", W / 2, 114);
   } else {
-    ctx.fillText("BEST " + best, W / 2, 148);
+    ctx.fillStyle = PAL.dim;
+    ctx.fillText("BEST " + best, W / 2, 114);
   }
+  ctx.fillStyle = PAL.dim;
+  ctx.fillText("PEAK FORM", W / 2, 138);
+  ctx.fillStyle = PAL.gold;
+  ctx.fillText(titleFor(bestSize), W / 2, 150);
+  ctx.fillStyle = PAL.text;
+  ctx.fillText("TREATS EATEN   " + stats.eaten, W / 2, 172);
+  ctx.fillText("BEST COMBO     x" + Math.max(1, stats.bestCombo), W / 2, 184);
+  ctx.fillText("BELLY FLOPS    " + stats.flops, W / 2, 196);
+  ctx.fillText("QUESTS DONE    " + stats.quests, W / 2, 208);
   if (gameOverT <= 0 && (t >> 4) % 2) {
     ctx.fillStyle = PAL.gold;
-    ctx.fillText("- TAP TO RETRY -", W / 2, 176);
+    ctx.fillText("- TAP TO RETRY -", W / 2, 244);
   }
   ctx.textAlign = "left";
 }
 
 // debug/testing handle
-window.__blob = () => ({ state, score, r: +blob.r.toFixed(1), hunger: +hunger.toFixed(1), streak, rush, title: sizeTitle, treats: treats.length, onGround: blob.onGround });
+window.__blob = () => ({ state, score, r: +blob.r.toFixed(1), hunger: +hunger.toFixed(1), streak, rush, rain, title: sizeTitle, treats: treats.length, onGround: blob.onGround, quest: quest ? quest.label + " " + quest.progress + "/" + quest.n : null, stats: Object.assign({}, stats) });
 window.__treats = () => treats.map(tr => ({ x: Math.round(tr.x), y: Math.round(tr.y), type: tr.type, state: tr.state }));
 window.__step = (n) => { for (let i = 0; i < (n || 1); i++) update(); draw(); return window.__blob(); };
 

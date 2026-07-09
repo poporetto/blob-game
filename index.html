@@ -115,7 +115,22 @@ const blob = {
   charging: false, power: 0,
   airEats: 0,
   deflate: 0,
+  // jelly wobble modes: damped springs deforming the silhouette (n = lobes around the surface)
+  wob: [
+    { a: 0, v: 0, n: 2, k: 0.055, damp: 0.93, ph: 0.0, sp: 0.021 },
+    { a: 0, v: 0, n: 3, k: 0.095, damp: 0.91, ph: 2.1, sp: -0.033 },
+    { a: 0, v: 0, n: 4, k: 0.150, damp: 0.89, ph: 4.2, sp: 0.047 },
+  ],
+  hwob: { a: 0, v: 0 },   // horizontal sway (top leans, bottom planted)
 };
+
+function exciteWobble(p, hp) {
+  const amps = [2.4, 1.7, 1.2];
+  blob.wob.forEach((m, i) => {
+    m.v += p * amps[i] * (0.7 + Math.random() * 0.6) * (Math.random() < 0.5 ? -1 : 1);
+  });
+  if (hp) blob.hwob.v += hp;
+}
 
 let treats = [];
 let marshmallows = [];            // {x,y,w,bob,sy,syv,drift}
@@ -215,6 +230,8 @@ function newGame() {
   blob.onGround = true; blob.mouth = 0; blob.chew = 0; blob.gulp = -1;
   blob.face = "idle"; blob.faceT = 0; blob.charging = false; blob.power = 0;
   blob.airEats = 0; blob.deflate = 0;
+  for (const m of blob.wob) { m.a = 0; m.v = 0; }
+  blob.hwob.a = 0; blob.hwob.v = 0;
   treats = []; particles = []; popups = [];
   marshmallows = [
     { x: 62,  y: 196, w: 28, bob: 0,    sy: 1, syv: 0, drift: 0.15 },
@@ -240,6 +257,7 @@ function hop() {
   blob.onGround = false;
   blob.airEats = 0;
   blob.sy = 1.35; blob.sx = 0.75;
+  exciteWobble(0.5, -blob.vx * 0.35);
   spawnDust(blob.x, blob.y, 6);
   sfx.hop(blob.power);
 }
@@ -376,6 +394,7 @@ function finishDevour(tr) {
     }
   }
   blob.syv -= 0.25;
+  exciteWobble(0.35);
 }
 
 // ---------- particles ----------
@@ -422,6 +441,16 @@ function update() {
   blob.syv += (1 - blob.sy) * 0.22; blob.syv *= 0.78; blob.sy += blob.syv;
   blob.dr = lerp(blob.dr, blob.r, 0.08);
 
+  // jelly wobble spring physics (runs in every state so title/gameover blobs stay alive)
+  for (const m of blob.wob) {
+    m.v += -m.a * m.k;
+    m.v *= m.damp;
+    m.a = Math.max(-4, Math.min(4, m.a + m.v));
+  }
+  blob.hwob.v += -blob.hwob.a * 0.16;
+  blob.hwob.v *= 0.90;
+  blob.hwob.a += blob.hwob.v;
+
   // marshmallow springs + drift
   for (const mm of marshmallows) {
     mm.syv += (1 - mm.sy) * 0.2; mm.syv *= 0.8; mm.sy += mm.syv;
@@ -458,6 +487,7 @@ function update() {
     blob.power = Math.min(1, blob.power + 0.03);
     blob.sy = lerp(blob.sy, 0.62 + 0.1 * Math.sin(t * 0.5), 0.3);
     blob.sx = lerp(blob.sx, 1.3, 0.3);
+    if (t % 5 === 0) exciteWobble(0.06 + blob.power * 0.1);   // trembling with effort
   }
 
   // ---- blob physics ----
@@ -468,8 +498,8 @@ function update() {
     const sp = Math.hypot(blob.vx, blob.vy);
     blob.sy = lerp(blob.sy, 1 + Math.min(0.35, sp * 0.045), 0.3);
     blob.sx = lerp(blob.sx, 1 - Math.min(0.25, sp * 0.03), 0.3);
-    if (blob.x < WALL_L + blob.dr) { blob.x = WALL_L + blob.dr; blob.vx = Math.abs(blob.vx) * 0.75; blob.sx = 0.7; sfx.bounce(); }
-    if (blob.x > WALL_R - blob.dr) { blob.x = WALL_R - blob.dr; blob.vx = -Math.abs(blob.vx) * 0.75; blob.sx = 0.7; sfx.bounce(); }
+    if (blob.x < WALL_L + blob.dr) { blob.x = WALL_L + blob.dr; blob.vx = Math.abs(blob.vx) * 0.75; blob.sx = 0.7; exciteWobble(0.4, 1.8); sfx.bounce(); }
+    if (blob.x > WALL_R - blob.dr) { blob.x = WALL_R - blob.dr; blob.vx = -Math.abs(blob.vx) * 0.75; blob.sx = 0.7; exciteWobble(0.4, -1.8); sfx.bounce(); }
     if (blob.y - blob.dr * 2 < 30 && blob.vy < 0) { blob.vy = Math.abs(blob.vy) * 0.6; }
 
     // marshmallow trampolines (falling only, combo keeps going!)
@@ -481,6 +511,7 @@ function update() {
           blob.vy = -Math.min(9.5, Math.max(6.2, blob.vy * 0.95));
           blob.sy = 0.6; blob.sx = 1.35;
           mm.sy = 0.45;
+          exciteWobble(0.9, blob.vx * 0.4);
           spawnDust(blob.x, mm.y + 2, 5);
           sfx.boing();
           break;
@@ -496,6 +527,7 @@ function update() {
         blob.vy = -impact * 0.42;
         blob.sy = Math.max(0.45, 1 - impact * 0.09);
         blob.sx = Math.min(1.6, 1 + impact * 0.09);
+        exciteWobble(Math.min(1.2, impact * 0.13), blob.vx * 0.5);
         spawnDust(blob.x, blob.y, Math.min(10, 2 + impact | 0));
         sfx.bounce();
       } else {
@@ -503,6 +535,7 @@ function update() {
         blob.onGround = true;
         blob.airEats = 0;                                  // combo chain ends when settled
         blob.sy = 0.8; blob.sx = 1.2;
+        exciteWobble(0.45, blob.vx * 0.6);
       }
       blob.vx *= 0.8;
     }
@@ -525,6 +558,7 @@ function update() {
   } else {
     blob.deflate++;
     blob.r = Math.max(4, blob.r - 0.35);
+    if (blob.deflate % 6 === 0) exciteWobble(0.5, (Math.random() - 0.5) * 2);
     if (blob.deflate % 4 === 0) spawnBurst(blob.x + (Math.random() - 0.5) * blob.dr, blob.y - blob.dr, PAL.blobLight, 2);
     if (blob.deflate > 70) {
       state = "GAMEOVER";
@@ -730,52 +764,99 @@ function drawMarshmallow(mm) {
   px(x - 2, y + bobY - h + 2, 2, 1, "#ffd8e8");
 }
 
-// scanline-filled elliptical blob with squash/stretch, gulp bulge, face
+// water-balloon jelly blob: deformed silhouette with independent left/right
+// edge wobble, gravity sag, motion shear, gulp bulge, squash/stretch, face
 function drawBlob() {
   const r = blob.dr;
   const rx = r * blob.sx, ry = r * blob.sy;
-  const bx = Math.round(blob.x);
+  const bcx = Math.round(blob.x);
   const bot = Math.round(blob.y);
   const cy = bot - ry;
 
   const rushGlow = rush > 0;
   const bodyC = rushGlow && (t >> 2) % 2 ? PAL.blobLight : PAL.blob;
 
+  // wobble amplitude scales with size so a crumb doesn't wobble into noise
+  const ampK = Math.max(0.45, Math.min(1.5, r / 20));
+  const maxOff = r * 0.3;
+  const sag = blob.onGround ? 0.17 : 0.06;                // mass pools at the bottom
+  const airLag = blob.onGround ? 0 : Math.max(-4, Math.min(4, -blob.vx * 1.3));
+  const gulpU = blob.gulp >= 0 ? blob.gulp : null;
+
+  // ---- build the deformed silhouette: left/right edge per scanline ----
+  const top = -Math.round(ry), botR = Math.round(ry);
+  const L = [], R = [];
+  for (let dy = top; dy <= botR; dy++) {
+    const q = 1 - (dy / ry) ** 2;
+    if (q <= 0) { L.push(0); R.push(-1); continue; }
+    const u = (dy + ry) / (2 * ry);                       // 0 top → 1 bottom
+    let w = rx * Math.sqrt(q);
+    // water-balloon belly: wider below the middle, narrower up top
+    w *= 1 + sag * Math.sin(Math.PI * u) * (u - 0.35) * 2;
+    // gulp bulge traveling down
+    if (gulpU !== null) {
+      const g = Math.exp(-((u - gulpU) ** 2) * 18);
+      w *= 1 + 0.22 * g;
+    }
+    // jelly wobble: each side gets its own phase → lopsided and alive
+    let oL = 0, oR = 0;
+    for (const m of blob.wob) {
+      const base = m.n * Math.PI * u + m.ph + t * m.sp;
+      oL += m.a * Math.sin(base);
+      oR += m.a * Math.sin(base + m.n * 1.9);
+    }
+    // ever-present micro ripple so it never reads as a rigid ball
+    oL += 0.5 * Math.sin(u * 9.4 - t * 0.11);
+    oR += 0.5 * Math.sin(u * 9.4 - t * 0.11 + 2.6);
+    oL = Math.max(-maxOff, Math.min(maxOff, oL * ampK));
+    oR = Math.max(-maxOff, Math.min(maxOff, oR * ampK));
+    // sway: top leans with wobble and lags behind motion, bottom stays planted
+    const shear = (blob.hwob.a * 1.6 + airLag) * (1 - u);
+    const lft = bcx + shear - w + oL;
+    L.push(lft);
+    R.push(Math.max(lft + 2, bcx + shear + w + oR));
+  }
+  const row = (dy) => [L[dy - top], R[dy - top]];
+
+  // rainbow aura during sugar rush — follows the jelly silhouette
   if (rushGlow) {
     const ac = RAINBOW[(t >> 2) % 6];
-    for (let dy = -ry - 2; dy <= ry + 2; dy += 2) {
-      const q = 1 - (dy / (ry + 2)) ** 2;
-      if (q <= 0) continue;
-      const w = (rx + 2) * Math.sqrt(q);
-      px(bx - w, cy + dy, w * 2, 2, ac);
+    for (let dy = top; dy <= botR; dy += 2) {
+      const [lft, rgt] = row(dy);
+      if (rgt <= lft) continue;
+      px(lft - 2, cy + dy - 1, rgt - lft + 4, 2, ac);
     }
+  }
+  // body
+  for (let dy = top; dy <= botR; dy++) {
+    const [lft, rgt] = row(dy);
+    if (rgt <= lft) continue;
+    px(lft, cy + dy, rgt - lft, 1, bodyC);
+  }
+  // depth shading hugging the deformed edges
+  for (let dy = top; dy <= botR; dy++) {
+    const [lft, rgt] = row(dy);
+    if (rgt <= lft) continue;
+    const u = (dy + ry) / (2 * ry);
+    if (u > 0.55) {
+      const d = Math.max(2, r * 0.09);
+      px(lft, cy + dy, d, 1, PAL.blobDark);
+      px(rgt - d, cy + dy, d, 1, PAL.blobDark);
+    } else if (u > 0.2) {
+      px(rgt - 2, cy + dy, 2, 1, PAL.blobDark);
+    }
+  }
+  // wet gloss following the wobbling edge
+  for (let dy = top; dy <= botR; dy++) {
+    const u = (dy + ry) / (2 * ry);
+    if (u < 0.12 || u > 0.34) continue;
+    const [lft, rgt] = row(dy);
+    if (rgt <= lft) continue;
+    px(lft + (rgt - lft) * 0.16, cy + dy, Math.max(2, (rgt - lft) * 0.16), 1, PAL.blobHi);
   }
 
-  const gulpY = blob.gulp >= 0 ? -ry + blob.gulp * ry * 2 : null;
-  for (let dy = -Math.round(ry); dy <= Math.round(ry); dy++) {
-    const q = 1 - (dy / ry) ** 2;
-    if (q <= 0) continue;
-    let w = rx * Math.sqrt(q);
-    if (gulpY !== null) {
-      const g = Math.exp(-((dy - gulpY) ** 2) / (r * 1.5));
-      w *= 1 + 0.22 * g;
-    }
-    px(bx - w, cy + dy, w * 2, 1, bodyC);
-  }
-  for (let dy = Math.round(ry * 0.55); dy <= Math.round(ry); dy++) {
-    const q = 1 - (dy / ry) ** 2;
-    if (q <= 0) continue;
-    let w = rx * Math.sqrt(q);
-    if (gulpY !== null) {
-      const g = Math.exp(-((dy - gulpY) ** 2) / (r * 1.5));
-      w *= 1 + 0.22 * g;
-    }
-    px(bx - w, cy + dy, 3, 1, PAL.blobDark);
-    px(bx + w - 3, cy + dy, 3, 1, PAL.blobDark);
-  }
-  const hw = Math.max(2, r * 0.35);
-  px(bx - rx * 0.5, cy - ry * 0.6, hw, Math.max(1, r * 0.12), PAL.blobHi);
-  px(bx - rx * 0.6, cy - ry * 0.45, Math.max(1, r * 0.14), Math.max(1, r * 0.2), PAL.blobHi);
+  // face & crown ride the sway
+  const bx = bcx + Math.round((blob.hwob.a * 1.6 + airLag) * 0.7);
 
   // ----- face -----
   const es = Math.max(2, Math.round(r * 0.16));
@@ -1061,6 +1142,7 @@ function drawTitle() {
 
   // bouncing demo blob (drawn at native pixels — no scaling artifacts)
   const bounce = Math.abs(Math.sin(t * 0.06));
+  if (t % 52 === 0) exciteWobble(0.9, (Math.random() - 0.5) * 3);  // jiggle on each demo landing
   const by = 158 - bounce * 30;
   const sq = bounce < 0.15 ? 0.75 : 1 + bounce * 0.12;
   const keep = { x: blob.x, y: blob.y, dr: blob.dr, sx: blob.sx, sy: blob.sy, mouth: blob.mouth, look: blob.look, chew: blob.chew };
